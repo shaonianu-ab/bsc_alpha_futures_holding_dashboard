@@ -107,16 +107,13 @@ function renderLogin() {
   loginScreen.innerHTML = `
     <section class="login-card">
       <div class="login-mark">B</div>
-      <p class="eyebrow">访问保护</p>
-      <h1>登录 BSC 持仓看板</h1>
-      <p class="subtle">请输入管理员在设置中配置的用户名和密码。</p>
+      <h1>登录</h1>
       ${state.loginError ? `<p class="login-error" role="alert">${escapeHtml(state.loginError)}</p>` : ""}
       <form data-form="login" class="login-form">
         <div class="field"><label>用户名</label><input name="username" autocomplete="username" required autofocus></div>
         <div class="field"><label>密码</label><input name="password" type="password" autocomplete="current-password" required></div>
         <button class="button button-primary" type="submit">登录</button>
       </form>
-      <p class="hint">会话在 12 小时后失效；修改访问保护设置会使其他已登录浏览器退出。</p>
     </section>
   `;
 }
