@@ -12,6 +12,7 @@ const refreshButton = document.querySelector("#refresh-button");
 const snapshotStatus = document.querySelector("#snapshot-status");
 const numberFormatter = new Intl.NumberFormat("en-US", { maximumFractionDigits: 2 });
 const integerFormatter = new Intl.NumberFormat("en-US", { maximumFractionDigits: 0 });
+let noticeTimeoutId = null;
 
 function escapeHtml(value) {
   return String(value ?? "")
@@ -58,10 +59,22 @@ function shortContract(value) {
   return contract ? `$${contract.slice(0, 8)}...${contract.slice(-5)}` : "-";
 }
 
-function showNotice(message, isError = false) {
+function showNotice(message, isError = false, autoDismiss = !isError) {
+  if (noticeTimeoutId !== null) {
+    window.clearTimeout(noticeTimeoutId);
+    noticeTimeoutId = null;
+  }
   notice.hidden = !message;
   notice.textContent = message || "";
   notice.classList.toggle("error", isError);
+  if (!message || !autoDismiss) return;
+
+  noticeTimeoutId = window.setTimeout(() => {
+    notice.hidden = true;
+    notice.textContent = "";
+    notice.classList.remove("error");
+    noticeTimeoutId = null;
+  }, 5_000);
 }
 
 async function request(path, options = {}) {
@@ -465,7 +478,7 @@ function render() {
 async function refresh() {
   try {
     setRefreshing(true);
-    showNotice("正在获取 Binance 市场数据并逐个查询配置的钱包余额。");
+    showNotice("正在获取 Binance 市场数据并逐个查询配置的钱包余额。", false, false);
     const result = await request("/api/refresh", { method: "POST", body: "{}" });
     await loadDashboard();
     showNotice(`已保存快照：${result.total_count} 个合约匹配代币。`);
