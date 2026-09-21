@@ -1,4 +1,9 @@
-const state = { dashboard: null, holderComparison: null, view: "overview" };
+const state = {
+  dashboard: null,
+  holderComparison: null,
+  replenishmentSort: { field: "fdv", direction: "asc" },
+  view: "overview",
+};
 
 const content = document.querySelector("#content");
 const notice = document.querySelector("#notice");
@@ -222,11 +227,26 @@ function renderOpportunities() {
 }
 
 function renderReplenishments() {
-  const tokens = state.dashboard.replenishments;
+  const { field, direction } = state.replenishmentSort;
+  const tokens = [...state.dashboard.replenishments].sort((left, right) => {
+    const primary = field === "fdv"
+      ? Number(left.fdv_usd) - Number(right.fdv_usd)
+      : Number(left.shortfall_usd) - Number(right.shortfall_usd);
+    const secondary = field === "fdv"
+      ? Number(right.shortfall_usd) - Number(left.shortfall_usd)
+      : Number(left.fdv_usd) - Number(right.fdv_usd);
+    const result = primary || secondary || left.symbol.localeCompare(right.symbol);
+    return direction === "asc" ? result : -result;
+  });
+  const sortButton = (sortField, label) => {
+    const active = field === sortField;
+    const arrow = active ? (direction === "asc" ? "↑" : "↓") : "";
+    return `<button class="button button-small sort-button ${active ? "active" : ""}" data-action="sort-replenishments" data-sort-field="${sortField}" aria-pressed="${active}">${label}${arrow ? ` ${arrow}` : ""}</button>`;
+  };
   content.innerHTML = `
     <header class="view-heading"><div><p class="eyebrow">补仓</p><h1>低 FDV 补仓清单</h1><p class="subtle">当前价值大于零且低于其目标值的已确认持仓。该清单是资金缺口，不构成买入建议。</p></div><span class="badge badge-amber">待补 ${money(state.dashboard.metrics.replenishment_shortfall_usd)}</span></header>
     <section class="panel table-panel">
-      ${filterToolbar("replenishment", "按 FDV 与待补金额排序", "待确认的交易所余额会阻止代币进入本清单。")}
+      <div class="table-toolbar"><div><h2>补仓候选</h2><p class="hint">待确认的交易所余额会阻止代币进入本清单。</p></div><div class="table-toolbar-actions"><input class="filter-input" data-filter="replenishment" placeholder="筛选 Symbol 或名称"><div class="sort-controls" aria-label="补仓清单排序"><span class="sort-label">排序</span>${sortButton("fdv", "FDV")}${sortButton("shortfall", "待补金额")}</div></div></div>
       <div class="table-wrap"><table data-table="replenishment"><thead><tr><th>代币</th><th class="numeric">FDV</th><th class="numeric">合计价值</th><th class="numeric">目标值</th><th class="numeric">待补金额</th><th>匹配与价格</th><th></th></tr></thead>
       <tbody>${tokens.map((token) => `
         <tr data-search="${escapeHtml(`${token.symbol} ${token.name}`.toLowerCase())}"><td class="token-cell">${tokenCell(token)}</td><td class="numeric">${moneyCompact(token.fdv_usd)}</td><td class="numeric">${money(token.total_value_usd)}<span class="token-name">链上 ${money(token.onchain_value_usd)} · 本地 ${money(token.manual_value_usd)}</span></td><td class="numeric">${money(token.target_value_usd)}</td><td class="numeric"><strong>${money(token.shortfall_usd)}</strong></td><td>${riskCell(token)}</td><td><button class="button button-small" data-action="edit-token" data-contract="${token.contract_address}">调整规则</button></td></tr>
@@ -560,6 +580,14 @@ document.addEventListener("click", async (event) => {
   if (!target) return;
   if (target.dataset.action === "refresh") return refresh();
   if (target.dataset.action === "close-modal") return modal.close();
+  if (target.dataset.action === "sort-replenishments") {
+    const field = target.dataset.sortField;
+    const current = state.replenishmentSort;
+    state.replenishmentSort = current.field === field
+      ? { field, direction: current.direction === "asc" ? "desc" : "asc" }
+      : { field, direction: field === "fdv" ? "asc" : "desc" };
+    return render();
+  }
   if (target.dataset.action === "edit-token" || target.dataset.action === "add-manual") {
     return openTokenModal(target.dataset.contract);
   }
