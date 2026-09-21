@@ -46,7 +46,10 @@ class DashboardStoreTest(unittest.TestCase):
         self.alpha = match("ALPHA", 1, "10000000", "2", "5")
         self.empty = match("EMPTY", 2, "50000000", "1")
         self.pending = match("PENDING", 3, "25000000", "1")
-        self.store.save_snapshot([self.alpha, self.empty, self.pending], wallet_count=1)
+        self.pending_duplicate = match("PENDING", 4, "25000000", "1")
+        self.store.save_snapshot(
+            [self.alpha, self.empty, self.pending, self.pending_duplicate], wallet_count=1
+        )
 
     def tearDown(self) -> None:
         self.temporary_directory.cleanup()
@@ -66,7 +69,6 @@ class DashboardStoreTest(unittest.TestCase):
                 "source_name": "Binance",
                 "asset_symbol": "PENDING",
                 "amount": "7",
-                "mapping_status": "pending",
             }
         )
 
@@ -84,24 +86,66 @@ class DashboardStoreTest(unittest.TestCase):
         self.assertFalse(tokens["PENDING"]["is_replenishment"])
         self.assertEqual(
             dashboard["manual_holding_candidates"]["2"],
-            [self.pending.contract_address.lower()],
+            [
+                {
+                    "contract_address": self.pending.contract_address.lower(),
+                    "name": "PENDING Token",
+                    "symbol": "PENDING",
+                },
+                {
+                    "contract_address": self.pending_duplicate.contract_address.lower(),
+                    "name": "PENDING Token",
+                    "symbol": "PENDING",
+                },
+            ],
         )
 
     def test_csv_import_updates_the_same_manual_holding(self) -> None:
         csv_text = "\n".join(
             [
-                "source_name,asset_symbol,amount,contract_address,mapping_status",
-                f"Binance,ALPHA,5,{self.alpha.contract_address},confirmed",
+                "source_name,asset_symbol,amount",
+                "Binance,ALPHA,5",
             ]
         )
         self.assertEqual(self.store.import_manual_holdings(csv_text), 1)
 
-        updated_csv = csv_text.replace(",5,", ",7,")
+        updated_csv = csv_text.replace(",5", ",7")
         self.assertEqual(self.store.import_manual_holdings(updated_csv), 1)
         holdings = self.store.manual_holdings()
 
         self.assertEqual(len(holdings), 1)
         self.assertEqual(holdings[0]["amount"], "7")
+        self.assertEqual(holdings[0]["mapping_status"], "confirmed")
+        self.assertEqual(holdings[0]["contract_address"], self.alpha.contract_address.lower())
+
+    def test_unique_symbol_is_confirmed_automatically(self) -> None:
+        result = self.store.save_manual_holding(
+            {
+                "source_name": "Binance",
+                "asset_symbol": "ALPHA",
+                "amount": "5",
+            }
+        )
+
+        self.assertTrue(result["auto_matched"])
+        self.assertEqual(result["mapping_status"], "confirmed")
+        self.assertEqual(result["contract_address"], self.alpha.contract_address.lower())
+
+    def test_refresh_can_confirm_a_historical_pending_record(self) -> None:
+        pending_store = DashboardStore(Path(self.temporary_directory.name) / "pending.sqlite3")
+        pending_store.save_manual_holding(
+            {
+                "source_name": "Gate",
+                "asset_symbol": "LATER",
+                "amount": "3",
+            }
+        )
+        pending_store.save_snapshot([match("LATER", 21, "10000000", "1")], wallet_count=0)
+
+        self.assertEqual(pending_store.auto_confirm_pending_holdings(), 1)
+        holding = pending_store.manual_holdings()[0]
+        self.assertEqual(holding["mapping_status"], "confirmed")
+        self.assertEqual(holding["contract_address"], f"0x{21:040x}")
 
     def test_settings_validate_and_normalize_wallets(self) -> None:
         parsed = parse_settings_payload(

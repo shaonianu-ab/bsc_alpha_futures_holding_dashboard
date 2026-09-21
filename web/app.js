@@ -334,36 +334,37 @@ function renderHolderComparison() {
 function renderMaintenance() {
   const { manual_holdings: holdings, manual_holding_candidates: candidates } = state.dashboard;
   content.innerHTML = `
-    <header class="view-heading"><div><p class="eyebrow">本地维护</p><h1>交易所持仓与关联确认</h1><p class="subtle">不接交易所 API。可逐条登记数量，或粘贴交易所导出的 CSV；只有确认合约关联的记录会计入总持仓。</p></div></header>
+    <header class="view-heading"><div><p class="eyebrow">本地维护</p><h1>交易所持仓匹配</h1><p class="subtle">不接交易所 API。输入交易所 Symbol 后，系统会自动匹配当前快照中的 BSC 合约；只有多个或没有候选时才需要人工处理。</p></div></header>
     <section class="maintenance-grid">
       <article class="panel"><p class="eyebrow">新增记录</p><h2>录入交易所持仓</h2>
         <form data-form="manual-holding" class="form-grid">
           <div class="field"><label>来源</label><input name="source_name" placeholder="例如 Binance" required></div>
           <div class="field"><label>交易所 Symbol</label><input name="asset_symbol" placeholder="例如 APT" required></div>
-          <div class="field"><label>数量</label><input name="amount" type="number" min="0" step="any" required></div>
-          <div class="field"><label>关联状态</label><select name="mapping_status"><option value="pending">待确认</option><option value="confirmed">已确认</option></select></div>
-          <div class="field full"><label>BSC 合约地址（已确认时必填）</label><input name="contract_address" placeholder="0x..."></div>
+          <div class="field full"><label>数量</label><input name="amount" type="number" min="0" step="any" required><p class="hint">保存后会自动确认唯一候选；多个或无候选会保留在下方的待确认操作中。</p></div>
           <div class="field full"><label>备注</label><input name="note" placeholder="可选"></div>
           <div class="field full form-actions"><button class="button button-primary">保存本地持仓</button></div>
         </form>
       </article>
       <article class="panel"><p class="eyebrow">CSV 导入</p><h2>粘贴交易所余额</h2>
-        <p class="hint">必需列：<code>source_name,asset_symbol,amount</code>。可选列：<code>contract_address,mapping_status,note</code>。相同来源、Symbol、合约地址和状态的记录会更新数量，避免重复累计。</p>
+        <p class="hint">必需列：<code>source_name,asset_symbol,amount</code>。可选列：<code>contract_address,note</code>。未填写合约地址时，系统会自动确认唯一候选；其余记录会等待人工处理。</p>
         <form data-form="csv-import"><div class="field"><textarea name="csv_text" placeholder="source_name,asset_symbol,amount&#10;Binance,APT,12.5"></textarea></div><div class="form-actions"><button class="button">导入 CSV</button></div></form>
       </article>
     </section>
     <section class="panel table-panel" style="margin-top:16px">
       <div class="table-toolbar"><div><p class="eyebrow">维护队列</p><h2>本地交易所记录</h2></div><span class="badge badge-neutral">${holdings.length} 条记录</span></div>
-      <div class="table-wrap"><table><thead><tr><th>来源 / Symbol</th><th class="numeric">数量</th><th>关联状态</th><th>候选合约</th><th>最近维护</th><th>备注</th><th></th></tr></thead>
+      <div class="table-wrap"><table><thead><tr><th>来源 / Symbol</th><th class="numeric">数量</th><th>匹配结果</th><th>待确认操作</th><th>最近维护</th><th>备注</th><th></th></tr></thead>
       <tbody>${holdings.map((holding) => {
         const suggestions = candidates[String(holding.id)] || [];
-        const candidate = holding.mapping_status === "pending" && suggestions.length === 1
-          ? `<button class="button button-small" data-action="confirm-suggestion" data-id="${holding.id}" data-contract="${suggestions[0]}">使用候选并确认</button>`
+        const matchResult = holding.mapping_status === "confirmed"
+          ? `<span class="badge badge-green">已确认</span><span class="contract">${shortContract(holding.contract_address)}</span>`
+          : '<span class="badge badge-amber">待确认</span><span class="hint">未计入持仓与补仓计算</span>';
+        const candidate = holding.mapping_status === "confirmed"
+          ? '<span class="hint">无需操作</span>'
           : suggestions.length
-            ? suggestions.map((contract) => `<span class="contract">${shortContract(contract)}</span>`).join(" ")
-            : '<span class="hint">无唯一候选</span>';
+            ? `<div class="candidate-actions"><span class="hint">${suggestions.length === 1 ? "已找到唯一候选，请确认：" : `找到 ${suggestions.length} 个候选，请选择：`}</span>${suggestions.map((suggestion) => `<button class="button button-small" data-action="confirm-suggestion" data-id="${holding.id}" data-contract="${suggestion.contract_address}">确认 ${escapeHtml(suggestion.name)} · ${shortContract(suggestion.contract_address)}</button>`).join("")}</div>`
+            : `<div class="candidate-actions"><span class="hint">未找到当前 BSC 合约</span><button class="button button-small" data-action="edit-manual" data-id="${holding.id}">人工关联</button></div>`;
         return `
-          <tr><td><strong>${escapeHtml(holding.source_name)}</strong><span class="token-name">${escapeHtml(holding.asset_symbol)}</span></td><td class="numeric">${amount(holding.amount)}</td><td>${holding.mapping_status === "confirmed" ? '<span class="badge badge-green">已确认</span>' : '<span class="badge badge-amber">待确认</span>'}<span class="contract">${shortContract(holding.contract_address)}</span></td><td>${candidate}</td><td>${new Date(holding.updated_at).toLocaleString("zh-CN")}</td><td>${escapeHtml(holding.note || "-")}</td><td class="row-actions"><button class="button button-small" data-action="edit-manual" data-id="${holding.id}">编辑</button><button class="button button-small button-danger" data-action="delete-manual" data-id="${holding.id}">删除</button></td></tr>
+          <tr><td><strong>${escapeHtml(holding.source_name)}</strong><span class="token-name">${escapeHtml(holding.asset_symbol)}</span></td><td class="numeric">${amount(holding.amount)}</td><td>${matchResult}</td><td>${candidate}</td><td>${new Date(holding.updated_at).toLocaleString("zh-CN")}</td><td>${escapeHtml(holding.note || "-")}</td><td class="row-actions"><button class="button button-small" data-action="edit-manual" data-id="${holding.id}">编辑</button><button class="button button-small button-danger" data-action="delete-manual" data-id="${holding.id}">删除</button></td></tr>
         `;
       }).join("")}</tbody></table></div>
       ${holdings.length ? "" : '<div class="empty-state"><h2>还没有本地交易所记录</h2><p class="subtle">先添加一条记录，或粘贴 CSV 导入。</p></div>'}
@@ -428,7 +429,7 @@ function openTokenModal(contract) {
       <div class="divider"></div>
       <p class="eyebrow">本地交易所持仓</p><h2>为 ${escapeHtml(token.symbol)} 登记数量</h2>
       <form data-form="manual-holding" class="form-grid">
-        <input type="hidden" name="contract_address" value="${token.contract_address}"><input type="hidden" name="asset_symbol" value="${escapeHtml(token.symbol)}"><input type="hidden" name="mapping_status" value="confirmed">
+        <input type="hidden" name="contract_address" value="${token.contract_address}"><input type="hidden" name="asset_symbol" value="${escapeHtml(token.symbol)}">
         <div class="field"><label>来源</label><input name="source_name" placeholder="例如 Binance" required></div>
         <div class="field"><label>数量</label><input name="amount" type="number" min="0" step="any" required></div>
         <div class="field full"><label>备注</label><input name="note" placeholder="可选"></div>
@@ -449,8 +450,7 @@ function openManualModal(id) {
         <div class="field"><label>来源</label><input name="source_name" value="${escapeHtml(holding.source_name)}" required></div>
         <div class="field"><label>交易所 Symbol</label><input name="asset_symbol" value="${escapeHtml(holding.asset_symbol)}" required></div>
         <div class="field"><label>数量</label><input name="amount" type="number" min="0" step="any" value="${escapeHtml(holding.amount)}" required></div>
-        <div class="field"><label>关联状态</label><select name="mapping_status"><option value="pending" ${holding.mapping_status === "pending" ? "selected" : ""}>待确认</option><option value="confirmed" ${holding.mapping_status === "confirmed" ? "selected" : ""}>已确认</option></select></div>
-        <div class="field full"><label>BSC 合约地址</label><input name="contract_address" value="${escapeHtml(holding.contract_address)}" placeholder="0x..."></div>
+        <div class="field full"><label>BSC 合约地址（可选）</label><input name="contract_address" value="${escapeHtml(holding.contract_address)}" placeholder="0x..."><p class="hint">填写合约地址会人工确认；留空时系统会按 Symbol 自动确认唯一候选。</p></div>
         <div class="field full"><label>备注</label><textarea name="note">${escapeHtml(holding.note)}</textarea></div>
         <div class="field full form-actions"><button class="button button-primary">保存修改</button></div>
       </form>
@@ -481,7 +481,7 @@ async function refresh() {
     showNotice("正在获取 Binance 市场数据并逐个查询配置的钱包余额。", false, false);
     const result = await request("/api/refresh", { method: "POST", body: "{}" });
     await loadDashboard();
-    showNotice(`已保存快照：${result.total_count} 个合约匹配代币。`);
+    showNotice(`已保存快照：${result.total_count} 个合约匹配代币。${result.auto_confirmed_count ? `已自动确认 ${result.auto_confirmed_count} 条交易所记录。` : ""}`);
   } catch (error) {
     showNotice(error.message, true);
   } finally {
@@ -541,17 +541,22 @@ async function saveForm(form) {
         asset_symbol: values.get("asset_symbol"),
         amount: values.get("amount"),
         contract_address: values.get("contract_address"),
-        mapping_status: values.get("mapping_status"),
         note: values.get("note"),
       };
       const id = form.dataset.id;
-      await request(id ? `/api/manual-holdings/${id}` : "/api/manual-holdings", {
+      const result = await request(id ? `/api/manual-holdings/${id}` : "/api/manual-holdings", {
         method: id ? "PUT" : "POST",
         body: JSON.stringify(payload),
       });
       if (modal.open) modal.close();
       await loadDashboard();
-      showNotice("本地交易所持仓已保存。");
+      if (result.auto_matched) {
+        showNotice(`已自动匹配 ${shortContract(result.contract_address)}，余额已计入总持仓。`);
+      } else if (result.mapping_status === "pending") {
+        showNotice(result.candidate_count ? `找到 ${result.candidate_count} 个候选合约，请在维护队列中选择。` : "未找到当前 BSC 合约，请在维护队列中人工关联。");
+      } else {
+        showNotice("本地交易所持仓已保存。");
+      }
       return;
     }
     if (type === "csv-import") {
@@ -623,7 +628,13 @@ document.addEventListener("click", async (event) => {
     try {
       await request(`/api/manual-holdings/${holding.id}`, {
         method: "PUT",
-        body: JSON.stringify({ ...holding, contract_address: target.dataset.contract, mapping_status: "confirmed" }),
+        body: JSON.stringify({
+          source_name: holding.source_name,
+          asset_symbol: holding.asset_symbol,
+          amount: holding.amount,
+          contract_address: target.dataset.contract,
+          note: holding.note,
+        }),
       });
       await loadDashboard();
       showNotice("候选合约已确认，余额已计入总持仓。");

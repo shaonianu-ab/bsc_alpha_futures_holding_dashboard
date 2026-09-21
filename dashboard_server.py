@@ -37,9 +37,6 @@ DEFAULT_SETTINGS = {
     "scheduled_refresh_time": "09:00",
 }
 EDITABLE_SETTINGS = frozenset(DEFAULT_SETTINGS)
-MANUAL_HOLDING_STATES = frozenset({"confirmed", "pending"})
-
-
 def utc_now() -> str:
     return datetime.now(timezone.utc).replace(microsecond=0).isoformat()
 
@@ -92,6 +89,28 @@ def normalized_contract_address(value: Any, *, required: bool = False) -> str:
     except ValueError as error:
         raise ValueError("contract_address must be a BSC contract address") from error
     return address
+
+
+def token_candidates_by_symbol(tokens: list[sqlite3.Row]) -> dict[str, list[dict[str, str]]]:
+    candidates: dict[str, list[dict[str, str]]] = defaultdict(list)
+    seen_contracts: set[str] = set()
+    for token in tokens:
+        symbol = str(token["symbol"]).strip().upper()
+        contract_address = normalized_contract_address(token["contract_address"], required=True)
+        candidate_key = f"{symbol}:{contract_address}"
+        if candidate_key in seen_contracts:
+            continue
+        seen_contracts.add(candidate_key)
+        candidates[symbol].append(
+            {
+                "contract_address": contract_address,
+                "name": str(token["name"]),
+                "symbol": symbol,
+            }
+        )
+    for entries in candidates.values():
+        entries.sort(key=lambda entry: (entry["name"], entry["contract_address"]))
+    return candidates
 
 
 def parse_wallet_addresses(value: str) -> list[str]:
@@ -306,6 +325,46 @@ class DashboardStore:
                 rows,
             )
         return snapshot_id
+
+    def current_token_candidates(self, asset_symbol: str) -> list[dict[str, str]]:
+        snapshot, tokens = self.latest_snapshot()
+        if snapshot is None:
+            return []
+        return token_candidates_by_symbol(tokens).get(asset_symbol, [])
+
+    def auto_confirm_pending_holdings(self) -> int:
+        snapshot, tokens = self.latest_snapshot()
+        if snapshot is None:
+            return 0
+
+        candidates_by_symbol = token_candidates_by_symbol(tokens)
+        updates: list[tuple[str, str, str, int]] = []
+        for holding in self.manual_holdings():
+            if holding["mapping_status"] != "pending":
+                continue
+            candidates = candidates_by_symbol.get(holding["asset_symbol"], [])
+            if len(candidates) == 1:
+                updates.append(
+                    (
+                        candidates[0]["contract_address"],
+                        "confirmed",
+                        utc_now(),
+                        holding["id"],
+                    )
+                )
+        if not updates:
+            return 0
+
+        with self.connect() as connection:
+            connection.executemany(
+                """
+                UPDATE manual_holdings
+                SET contract_address = ?, mapping_status = ?, updated_at = ?
+                WHERE id = ?
+                """,
+                updates,
+            )
+        return len(updates)
 
     def latest_snapshot(self) -> tuple[sqlite3.Row | None, list[sqlite3.Row]]:
         with self.connect() as connection:
@@ -551,11 +610,15 @@ class DashboardStore:
                 """
             ).fetchall()
 
-    def save_manual_holding(self, payload: dict[str, Any], holding_id: int | None = None) -> int:
+    def save_manual_holding(
+        self,
+        payload: dict[str, Any],
+        holding_id: int | None = None,
+        candidates: list[dict[str, str]] | None = None,
+    ) -> dict[str, Any]:
         source_name = str(payload.get("source_name", "")).strip()
         asset_symbol = str(payload.get("asset_symbol", "")).strip().upper()
         amount = decimal_text(nonnegative_decimal(payload.get("amount"), "amount"))
-        mapping_status = str(payload.get("mapping_status", "pending")).strip()
         contract_address = normalized_contract_address(payload.get("contract_address"))
         note = str(payload.get("note", "")).strip()
 
@@ -563,10 +626,21 @@ class DashboardStore:
             raise ValueError("source_name is required")
         if not asset_symbol:
             raise ValueError("asset_symbol is required")
-        if mapping_status not in MANUAL_HOLDING_STATES:
-            raise ValueError("mapping_status must be confirmed or pending")
-        if mapping_status == "confirmed" and not contract_address:
-            raise ValueError("A confirmed holding requires a contract_address")
+        auto_matched = False
+        candidate_count = 0
+        if contract_address:
+            mapping_status = "confirmed"
+        else:
+            current_candidates = (
+                candidates if candidates is not None else self.current_token_candidates(asset_symbol)
+            )
+            candidate_count = len(current_candidates)
+            if candidate_count == 1:
+                contract_address = current_candidates[0]["contract_address"]
+                mapping_status = "confirmed"
+                auto_matched = True
+            else:
+                mapping_status = "pending"
 
         values = (
             source_name,
@@ -599,19 +673,26 @@ class DashboardStore:
                     """,
                     values,
                 )
-                return int(cursor.lastrowid)
-            cursor = connection.execute(
-                """
-                UPDATE manual_holdings
-                SET source_name = ?, asset_symbol = ?, amount = ?, contract_address = ?,
-                    mapping_status = ?, updated_at = ?, note = ?
-                WHERE id = ?
-                """,
-                (*values, holding_id),
-            )
-            if cursor.rowcount == 0:
-                raise ValueError("Manual holding not found")
-        return holding_id
+                holding_id = int(cursor.lastrowid)
+            else:
+                cursor = connection.execute(
+                    """
+                    UPDATE manual_holdings
+                    SET source_name = ?, asset_symbol = ?, amount = ?, contract_address = ?,
+                        mapping_status = ?, updated_at = ?, note = ?
+                    WHERE id = ?
+                    """,
+                    (*values, holding_id),
+                )
+                if cursor.rowcount == 0:
+                    raise ValueError("Manual holding not found")
+        return {
+            "id": holding_id,
+            "mapping_status": mapping_status,
+            "contract_address": contract_address,
+            "candidate_count": candidate_count,
+            "auto_matched": auto_matched,
+        }
 
     def delete_manual_holding(self, holding_id: int) -> None:
         with self.connect() as connection:
@@ -625,6 +706,8 @@ class DashboardStore:
         if not reader.fieldnames or not required_columns.issubset(set(reader.fieldnames)):
             raise ValueError("CSV requires source_name, asset_symbol, and amount columns")
 
+        snapshot, tokens = self.latest_snapshot()
+        candidates_by_symbol = token_candidates_by_symbol(tokens) if snapshot is not None else {}
         imported = 0
         for row in reader:
             if not any(str(value or "").strip() for value in row.values()):
@@ -635,9 +718,11 @@ class DashboardStore:
                     "asset_symbol": row.get("asset_symbol"),
                     "amount": row.get("amount"),
                     "contract_address": row.get("contract_address"),
-                    "mapping_status": row.get("mapping_status") or "pending",
                     "note": row.get("note", ""),
-                }
+                },
+                candidates=candidates_by_symbol.get(
+                    str(row.get("asset_symbol") or "").strip().upper(), []
+                ),
             )
             imported += 1
         return imported
@@ -669,7 +754,12 @@ def refresh_snapshot(store: DashboardStore) -> dict[str, Any]:
     matches = source.build_matches()
     matches = aggregate_wallet_balances(matches, wallet_addresses)
     snapshot_id = store.save_snapshot(matches, len(wallet_addresses))
-    return {"snapshot_id": snapshot_id, "total_count": len(matches)}
+    auto_confirmed_count = store.auto_confirm_pending_holdings()
+    return {
+        "snapshot_id": snapshot_id,
+        "total_count": len(matches),
+        "auto_confirmed_count": auto_confirmed_count,
+    }
 
 
 class DailyRefreshScheduler(threading.Thread):
@@ -721,17 +811,15 @@ def match_quality(match_method: str) -> str:
     return "fallback"
 
 
-def candidate_contracts_by_symbol(
+def candidate_tokens_by_manual_holding(
     manual_holdings: list[sqlite3.Row], tokens: list[sqlite3.Row]
-) -> dict[int, list[str]]:
-    contracts_by_symbol: dict[str, list[str]] = defaultdict(list)
-    for token in tokens:
-        contracts_by_symbol[token["symbol"]].append(token["contract_address"])
+) -> dict[int, list[dict[str, str]]]:
+    candidates_by_symbol = token_candidates_by_symbol(tokens)
 
-    candidates: dict[int, list[str]] = {}
+    candidates: dict[int, list[dict[str, str]]] = {}
     for holding in manual_holdings:
         if holding["mapping_status"] == "pending":
-            candidates[holding["id"]] = contracts_by_symbol.get(holding["asset_symbol"], [])
+            candidates[holding["id"]] = candidates_by_symbol.get(holding["asset_symbol"], [])
     return candidates
 
 
@@ -785,7 +873,7 @@ def build_dashboard(store: DashboardStore) -> dict[str, Any]:
         }
 
     preferences = store.preferences()
-    candidates_by_manual_id = candidate_contracts_by_symbol(manual_holdings, token_rows)
+    candidates_by_manual_id = candidate_tokens_by_manual_holding(manual_holdings, token_rows)
     confirmed_amount_by_contract: dict[str, Decimal] = defaultdict(lambda: Decimal("0"))
     confirmed_sources_by_contract: dict[str, list[dict[str, Any]]] = defaultdict(list)
     pending_count_by_symbol: dict[str, int] = defaultdict(int)
@@ -1088,8 +1176,8 @@ class DashboardRequestHandler(SimpleHTTPRequestHandler):
                 self.send_json({"status": "saved"})
                 return
             if path == "/api/manual-holdings":
-                holding_id = self.server.store.save_manual_holding(payload)
-                self.send_json({"id": holding_id}, HTTPStatus.CREATED)
+                result = self.server.store.save_manual_holding(payload)
+                self.send_json(result, HTTPStatus.CREATED)
                 return
             if path == "/api/manual-holdings/import":
                 csv_text = str(payload.get("csv_text", ""))
@@ -1108,8 +1196,8 @@ class DashboardRequestHandler(SimpleHTTPRequestHandler):
             return
         try:
             holding_id = int(path.removeprefix(prefix))
-            self.server.store.save_manual_holding(self.read_json(), holding_id)
-            self.send_json({"id": holding_id})
+            result = self.server.store.save_manual_holding(self.read_json(), holding_id)
+            self.send_json(result)
         except Exception as error:  # noqa: BLE001
             self.handle_api_error(error)
 

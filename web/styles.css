@@ -421,6 +421,13 @@ h2 {
   background: var(--green-deep);
 }
 
+.candidate-actions {
+  display: flex;
+  align-items: flex-start;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
 .filter-input {
   width: min(290px, 100%);
   border: 1px solid var(--line);

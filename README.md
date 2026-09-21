@@ -60,13 +60,13 @@ The **持币地址变化** view compares the latest snapshot from each selected 
 The application does not use exchange APIs. Add exchange holdings manually in **本地维护**, or paste CSV data with these columns:
 
 ~~~csv
-source_name,asset_symbol,amount,contract_address,mapping_status,note
-Binance,EXAMPLE,12.5,0x0000000000000000000000000000000000000000,confirmed,optional note
+source_name,asset_symbol,amount,contract_address,note
+Binance,EXAMPLE,12.5,0x0000000000000000000000000000000000000000,optional note
 ~~~
 
-Required columns are source_name, asset_symbol, and amount. mapping_status=confirmed requires a BSC contract address. A pending record is not included in total holding value or replenishment decisions. When a pending exchange Symbol has exactly one current token candidate, the UI offers a confirmation action; it never confirms a Symbol-only match automatically.
+Required columns are source_name, asset_symbol, and amount. When contract_address is supplied, the record is confirmed with that BSC contract. When it is blank, the dashboard matches asset_symbol against the latest BSC token snapshot: one candidate is confirmed automatically; zero or multiple candidates remain pending for manual selection. Pending records are excluded from holding value and replenishment decisions. A refresh also confirms historical pending records that have exactly one current candidate.
 
-CSV imports update a record when source, exchange Symbol, contract address, and mapping status are the same. This prevents duplicate imports from increasing holdings.
+CSV imports update a record when source, exchange Symbol, resolved contract address, and resolved matching status are the same. This prevents duplicate imports from increasing holdings.
 
 ## Decision Rules
 
