@@ -1,12 +1,16 @@
 from __future__ import annotations
 
+import json
 import tempfile
+import threading
 import unittest
 from decimal import Decimal
+from http.client import HTTPConnection
 from pathlib import Path
 
 import list_bsc_futures_by_fdv as source
 from dashboard_server import (
+    DashboardHTTPServer,
     DashboardStore,
     aggregate_wallet_balances,
     build_dashboard,
@@ -225,6 +229,111 @@ class DashboardStoreTest(unittest.TestCase):
         self.assertEqual(comparison["rows"][0]["holder_change"], 45)
         self.assertEqual(comparison["rows"][1]["holder_change"], -10)
         self.assertEqual(comparison["rows"][0]["holder_change_pct"], 45.0)
+
+
+class LoginProtectionTest(unittest.TestCase):
+    def setUp(self) -> None:
+        self.temporary_directory = tempfile.TemporaryDirectory()
+        self.store = DashboardStore(Path(self.temporary_directory.name) / "dashboard.sqlite3")
+        self.server = DashboardHTTPServer(("127.0.0.1", 0), self.store)
+        self.server_thread = threading.Thread(target=self.server.serve_forever, daemon=True)
+        self.server_thread.start()
+
+    def tearDown(self) -> None:
+        self.server.shutdown()
+        self.server_thread.join(timeout=2)
+        self.server.server_close()
+        self.temporary_directory.cleanup()
+
+    def request(
+        self,
+        method: str,
+        path: str,
+        payload: dict[str, object] | None = None,
+        cookie: str = "",
+    ) -> tuple[int, dict[str, object], str]:
+        connection = HTTPConnection(*self.server.server_address, timeout=3)
+        headers = {"Content-Type": "application/json"}
+        if cookie:
+            headers["Cookie"] = cookie
+        body = json.dumps(payload).encode("utf-8") if payload is not None else None
+        connection.request(method, path, body=body, headers=headers)
+        response = connection.getresponse()
+        response_payload = json.loads(response.read().decode("utf-8"))
+        set_cookie = response.getheader("Set-Cookie", "")
+        status = response.status
+        connection.close()
+        return status, response_payload, set_cookie
+
+    def test_login_protects_data_and_configuration_rotates_sessions(self) -> None:
+        status, payload, _ = self.request("GET", "/api/auth/status")
+        self.assertEqual(status, 200)
+        self.assertEqual(payload["authentication"], {"enabled": False, "authenticated": True, "username": ""})
+
+        status, payload, setup_cookie = self.request(
+            "POST",
+            "/api/settings",
+            {
+                "auth_enabled": True,
+                "auth_username": "operator",
+                "auth_password": "correct-horse-battery-staple",
+            },
+        )
+        self.assertEqual(status, 200)
+        self.assertNotIn("auth_password", payload["settings"])
+        self.assertIn("HttpOnly", setup_cookie)
+        self.assertIn("SameSite=Strict", setup_cookie)
+        setup_session = setup_cookie.split(";", 1)[0]
+
+        status, payload, _ = self.request("GET", "/api/dashboard")
+        self.assertEqual(status, 401)
+        self.assertEqual(payload["code"], "authentication_required")
+
+        status, payload, _ = self.request(
+            "POST", "/api/auth/login", {"username": "operator", "password": "incorrect"}
+        )
+        self.assertEqual(status, 401)
+        self.assertEqual(payload["code"], "invalid_credentials")
+
+        status, payload, login_cookie = self.request(
+            "POST",
+            "/api/auth/login",
+            {"username": "operator", "password": "correct-horse-battery-staple"},
+        )
+        self.assertEqual(status, 200)
+        self.assertTrue(payload["authentication"]["authenticated"])
+        session = login_cookie.split(";", 1)[0]
+
+        status, _, _ = self.request("GET", "/api/dashboard", cookie=session)
+        self.assertEqual(status, 200)
+
+        status, _, rotated_cookie = self.request(
+            "POST",
+            "/api/settings",
+            {"auth_username": "new-operator", "auth_password": "another-safe-password"},
+            cookie=session,
+        )
+        self.assertEqual(status, 200)
+        self.assertTrue(rotated_cookie)
+        rotated_session = rotated_cookie.split(";", 1)[0]
+
+        status, _, _ = self.request("GET", "/api/dashboard", cookie=setup_session)
+        self.assertEqual(status, 401)
+        status, _, _ = self.request("GET", "/api/dashboard", cookie=session)
+        self.assertEqual(status, 401)
+        status, _, _ = self.request("GET", "/api/dashboard", cookie=rotated_session)
+        self.assertEqual(status, 200)
+
+        status, payload, logout_cookie = self.request(
+            "POST", "/api/auth/logout", {}, cookie=rotated_session
+        )
+        self.assertEqual(status, 200)
+        self.assertFalse(payload["authentication"]["authenticated"])
+        self.assertIn("Max-Age=0", logout_cookie)
+
+    def test_enabling_login_requires_a_password(self) -> None:
+        with self.assertRaisesRegex(ValueError, "auth_password is required"):
+            self.store.update_settings({"auth_enabled": True, "auth_username": "operator"})
 
 
 if __name__ == "__main__":

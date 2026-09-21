@@ -1,13 +1,18 @@
 const state = {
+  authentication: null,
   dashboard: null,
   holderComparison: null,
+  loginError: "",
   replenishmentSort: { field: "fdv", direction: "asc" },
   view: "overview",
 };
 
+const dashboardApp = document.querySelector("#dashboard-app");
+const loginScreen = document.querySelector("#login-screen");
 const content = document.querySelector("#content");
 const notice = document.querySelector("#notice");
 const modal = document.querySelector("#modal");
+const logoutButton = document.querySelector("#logout-button");
 const refreshButton = document.querySelector("#refresh-button");
 const snapshotStatus = document.querySelector("#snapshot-status");
 const numberFormatter = new Intl.NumberFormat("en-US", { maximumFractionDigits: 2 });
@@ -83,8 +88,54 @@ async function request(path, options = {}) {
     ...options,
   });
   const payload = await response.json();
-  if (!response.ok) throw new Error(payload.error || "请求失败");
+  if (!response.ok) {
+    const error = new Error(payload.error || "请求失败");
+    error.code = payload.code;
+    if (payload.code === "authentication_required") {
+      state.authentication = { enabled: true, authenticated: false, username: "" };
+      state.dashboard = null;
+      renderLogin();
+    }
+    throw error;
+  }
   return payload;
+}
+
+function renderLogin() {
+  dashboardApp.hidden = true;
+  loginScreen.hidden = false;
+  loginScreen.innerHTML = `
+    <section class="login-card">
+      <div class="login-mark">B</div>
+      <p class="eyebrow">访问保护</p>
+      <h1>登录 BSC 持仓看板</h1>
+      <p class="subtle">请输入管理员在设置中配置的用户名和密码。</p>
+      ${state.loginError ? `<p class="login-error" role="alert">${escapeHtml(state.loginError)}</p>` : ""}
+      <form data-form="login" class="login-form">
+        <div class="field"><label>用户名</label><input name="username" autocomplete="username" required autofocus></div>
+        <div class="field"><label>密码</label><input name="password" type="password" autocomplete="current-password" required></div>
+        <button class="button button-primary" type="submit">登录</button>
+      </form>
+      <p class="hint">会话在 12 小时后失效；修改访问保护设置会使其他已登录浏览器退出。</p>
+    </section>
+  `;
+}
+
+function showDashboard() {
+  loginScreen.hidden = true;
+  dashboardApp.hidden = false;
+  logoutButton.hidden = !state.authentication?.enabled;
+}
+
+function applyAuthentication(authentication) {
+  state.authentication = authentication;
+  if (authentication.enabled && !authentication.authenticated) {
+    state.dashboard = null;
+    renderLogin();
+    return false;
+  }
+  showDashboard();
+  return true;
 }
 
 function setRefreshing(active) {
@@ -375,6 +426,7 @@ function renderMaintenance() {
 function renderSettings() {
   const settings = state.dashboard.settings;
   const fdvLimitM = Number(settings.low_fdv_limit_usd) / 1_000_000;
+  const authenticationEnabled = settings.auth_enabled === "1";
   content.innerHTML = `
     <header class="view-heading"><div><p class="eyebrow">配置</p><h1>全局规则与钱包地址</h1><p class="subtle">修改后会立即保存到本地数据库；钱包地址在下一次刷新时生效。</p></div></header>
     <section class="settings-grid">
@@ -399,6 +451,16 @@ function renderSettings() {
         </dl>
         <div class="divider"></div><p class="hint">当前来源提供 FDV，而非已验证的流通市值。页面中的“低 FDV”不会表述为低市值。</p>
       </article>
+    </section>
+    <section class="panel auth-settings">
+      <div><p class="eyebrow">访问保护</p><h2>登录设置</h2><p class="subtle">默认关闭。开启后，查看与修改看板数据都需要登录；服务端的每日定时刷新不受影响。</p></div>
+      <form data-form="auth-settings" class="form-grid">
+        <div class="field full">${checkbox("auth_enabled", authenticationEnabled, "启用用户名和密码登录")}</div>
+        <div class="field"><label>用户名</label><input name="auth_username" value="${escapeHtml(settings.auth_username)}" autocomplete="username" placeholder="例如 admin"></div>
+        <div class="field"><label>${authenticationEnabled ? "新密码（留空则保持当前密码）" : "密码（开启时必填）"}</label><input name="auth_password" type="password" autocomplete="new-password" placeholder="至少 8 位"></div>
+        <div class="field full"><label>确认密码</label><input name="auth_password_confirmation" type="password" autocomplete="new-password" placeholder="再次输入新密码"><p class="hint">关闭访问保护会移除已保存的用户名和密码派生值。密码不会以明文保存或返回页面。</p></div>
+        <div class="field full form-actions"><button class="button button-primary">保存访问保护</button></div>
+      </form>
     </section>
   `;
 }
@@ -493,6 +555,36 @@ async function saveForm(form) {
   const values = new FormData(form);
   const type = form.dataset.form;
   try {
+    if (type === "login") {
+      const result = await request("/api/auth/login", {
+        method: "POST",
+        body: JSON.stringify({
+          username: values.get("username"),
+          password: values.get("password"),
+        }),
+      });
+      state.loginError = "";
+      if (applyAuthentication(result.authentication)) await loadDashboard();
+      return;
+    }
+    if (type === "auth-settings") {
+      const password = String(values.get("auth_password") || "");
+      const confirmation = String(values.get("auth_password_confirmation") || "");
+      if (password !== confirmation) throw new Error("两次输入的密码不一致");
+      const result = await request("/api/settings", {
+        method: "POST",
+        body: JSON.stringify({
+          auth_enabled: values.has("auth_enabled"),
+          auth_username: values.get("auth_username"),
+          auth_password: password,
+        }),
+      });
+      if (applyAuthentication(result.authentication)) {
+        await loadDashboard();
+        showNotice(result.authentication.enabled ? "访问保护已保存。" : "访问保护已关闭。", false);
+      }
+      return;
+    }
     if (type === "settings") {
       await request("/api/settings", {
         method: "POST",
@@ -568,6 +660,12 @@ async function saveForm(form) {
       showNotice(`已导入 ${result.imported} 条本地持仓记录。`);
     }
   } catch (error) {
+    if (type === "login") {
+      state.loginError = error.message;
+      renderLogin();
+      return;
+    }
+    if (error.code === "authentication_required") return;
     showNotice(error.message, true);
   }
 }
@@ -663,7 +761,26 @@ document.addEventListener("input", (event) => {
 });
 
 refreshButton.addEventListener("click", refresh);
-loadDashboard().catch((error) => {
+logoutButton.addEventListener("click", async () => {
+  try {
+    const result = await request("/api/auth/logout", { method: "POST", body: "{}" });
+    state.dashboard = null;
+    state.loginError = "";
+    applyAuthentication(result.authentication);
+  } catch (error) {
+    showNotice(error.message, true);
+  }
+});
+
+async function initialize() {
+  const result = await request("/api/auth/status");
+  if (!applyAuthentication(result.authentication)) return;
+  await loadDashboard();
+}
+
+initialize().catch((error) => {
+  if (error.code === "authentication_required") return;
+  showDashboard();
   showNotice(error.message, true);
   content.innerHTML = '<section class="empty-state"><h2>无法连接本地服务</h2><p class="subtle">请确认 dashboard_server.py 正在运行。</p></section>';
 });

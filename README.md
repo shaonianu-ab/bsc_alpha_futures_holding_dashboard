@@ -42,12 +42,21 @@ The **设置** view manages:
 - Low-FDV threshold in USD.
 - Price-gap warning threshold.
 - Daily scheduled refresh time in Asia/Singapore.
+- Optional username/password login protection, disabled by default.
 
 Each token can override the initial purchase amount, replenishment target, replenishment inclusion, exclusion status, and note.
 
 When no wallet address is configured, refreshes still retain market snapshots and treat every on-chain holding amount as zero.
 
 The server checks the configured time every 30 seconds while it is running. It creates at most one successful scheduled refresh per Singapore calendar day and retries after a failed scheduled refresh. If the server is stopped, it cannot refresh in the background; the next startup performs the missed refresh after the configured time.
+
+## Login Protection
+
+The **设置** view includes **访问保护**. It is disabled in a new installation. Enabling it requires a username and a password of 8 to 256 characters. The server stores a PBKDF2-SHA256 derived password value with a random salt; the plaintext password is not stored or returned by the API.
+
+When enabled, all dashboard data, refresh, configuration, holding maintenance, and historical comparison APIs require a login session. Sessions expire after 12 hours, logging out removes the current session, and changing access protection settings invalidates other active sessions. Scheduled refreshes continue to run on the server without a browser session.
+
+The default `127.0.0.1` listener keeps credentials and portfolio data on the local machine. If the dashboard is exposed with `DASHBOARD_HOST=0.0.0.0`, place it behind HTTPS and trusted network controls. Plain HTTP does not protect passwords or session cookies while they travel over a network.
 
 ## Snapshot History
 

@@ -2,17 +2,22 @@
 from __future__ import annotations
 
 import argparse
+import base64
 import csv
+import hashlib
+import hmac
 import json
+import secrets
 import sqlite3
 import threading
 import webbrowser
 from collections import defaultdict
-from dataclasses import replace
-from datetime import date, datetime, time as wall_clock_time, timezone
+from dataclasses import dataclass, replace
+from datetime import date, datetime, timedelta, time as wall_clock_time, timezone
 from decimal import Decimal, InvalidOperation
 from http import HTTPStatus
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
+from http.cookies import SimpleCookie
 from io import StringIO
 from pathlib import Path
 from typing import Any
@@ -27,6 +32,12 @@ WEB_DIRECTORY = PROJECT_ROOT / "web"
 DEFAULT_DATABASE_PATH = PROJECT_ROOT / "data" / "dashboard.sqlite3"
 MAX_JSON_BODY_BYTES = 1_000_000
 SINGAPORE_TIME_ZONE = ZoneInfo("Asia/Singapore")
+AUTH_SESSION_COOKIE = "bsc_holdings_session"
+AUTH_SESSION_LIFETIME = timedelta(hours=12)
+LOGIN_ATTEMPT_WINDOW = timedelta(minutes=15)
+MAX_LOGIN_ATTEMPTS = 5
+PASSWORD_HASH_ITERATIONS = 600_000
+AUTH_SECRET_SETTING_KEYS = frozenset({"auth_password_salt", "auth_password_hash"})
 
 DEFAULT_SETTINGS = {
     "wallet_addresses": "",
@@ -35,8 +46,31 @@ DEFAULT_SETTINGS = {
     "low_fdv_limit_usd": "200000000",
     "price_gap_alert_pct": "20",
     "scheduled_refresh_time": "09:00",
+    "auth_enabled": "0",
+    "auth_username": "",
 }
 EDITABLE_SETTINGS = frozenset(DEFAULT_SETTINGS)
+
+
+@dataclass(frozen=True)
+class AuthenticationConfiguration:
+    enabled: bool
+    username: str
+    password_salt: str
+    password_hash: str
+
+    @property
+    def is_configured(self) -> bool:
+        return bool(self.username and self.password_salt and self.password_hash)
+
+
+@dataclass(frozen=True)
+class AuthenticatedSession:
+    token: str
+    username: str
+    expires_at: datetime
+
+
 def utc_now() -> str:
     return datetime.now(timezone.utc).replace(microsecond=0).isoformat()
 
@@ -91,6 +125,145 @@ def normalized_contract_address(value: Any, *, required: bool = False) -> str:
     return address
 
 
+def enabled_setting(value: Any, field_name: str) -> bool:
+    if value is True or str(value).strip().lower() in {"1", "true", "yes", "on"}:
+        return True
+    if value is False or str(value).strip().lower() in {"0", "false", "no", "off", ""}:
+        return False
+    raise ValueError(f"{field_name} must be enabled or disabled")
+
+
+def normalized_auth_username(value: Any, *, required: bool) -> str:
+    username = str(value or "").strip()
+    if not username and not required:
+        return ""
+    if not 1 <= len(username) <= 64:
+        raise ValueError("auth_username must contain 1 to 64 characters")
+    if any(character.isspace() or ord(character) < 32 for character in username):
+        raise ValueError("auth_username cannot contain whitespace or control characters")
+    return username
+
+
+def normalized_auth_password(value: Any) -> str:
+    if value is None:
+        return ""
+    if not isinstance(value, str):
+        raise ValueError("auth_password must be text")
+    if not 8 <= len(value) <= 256:
+        raise ValueError("auth_password must contain 8 to 256 characters")
+    return value
+
+
+def derive_password_hash(password: str, salt: bytes) -> str:
+    return hashlib.pbkdf2_hmac(
+        "sha256", password.encode("utf-8"), salt, PASSWORD_HASH_ITERATIONS
+    ).hex()
+
+
+def password_record(password: str) -> tuple[str, str]:
+    salt = secrets.token_bytes(16)
+    return base64.b64encode(salt).decode("ascii"), derive_password_hash(password, salt)
+
+
+def password_matches(password: str, configuration: AuthenticationConfiguration) -> bool:
+    try:
+        salt = base64.b64decode(configuration.password_salt.encode("ascii"), validate=True)
+        expected_hash = derive_password_hash(password, salt)
+    except (ValueError, UnicodeEncodeError):
+        return False
+    return hmac.compare_digest(expected_hash, configuration.password_hash)
+
+
+class AuthenticationManager:
+    def __init__(self, configuration: AuthenticationConfiguration) -> None:
+        self._configuration = configuration
+        self._sessions: dict[str, AuthenticatedSession] = {}
+        self._failed_attempts: dict[str, list[datetime]] = defaultdict(list)
+        self._lock = threading.Lock()
+
+    @property
+    def authentication_enabled(self) -> bool:
+        with self._lock:
+            return self._configuration.enabled
+
+    def replace_configuration(self, configuration: AuthenticationConfiguration) -> bool:
+        with self._lock:
+            changed = configuration != self._configuration
+            self._configuration = configuration
+            if changed:
+                self._sessions.clear()
+                self._failed_attempts.clear()
+            return changed
+
+    def session(self, token: str) -> AuthenticatedSession | None:
+        if not token:
+            return None
+        with self._lock:
+            now = datetime.now(timezone.utc)
+            self._discard_expired_sessions(now)
+            return self._sessions.get(token)
+
+    def login(
+        self, remote_address: str, username: str, password: str
+    ) -> tuple[AuthenticatedSession | None, int]:
+        with self._lock:
+            now = datetime.now(timezone.utc)
+            self._discard_expired_sessions(now)
+            attempts = self._recent_attempts(remote_address, now)
+            if len(attempts) >= MAX_LOGIN_ATTEMPTS:
+                retry_at = attempts[0] + LOGIN_ATTEMPT_WINDOW
+                retry_after = max(1, int((retry_at - now).total_seconds()) + 1)
+                return None, retry_after
+
+            configuration = self._configuration
+            valid_username = hmac.compare_digest(
+                username.encode("utf-8"), configuration.username.encode("utf-8")
+            )
+            valid_password = configuration.is_configured and password_matches(password, configuration)
+            if not configuration.enabled or not valid_username or not valid_password:
+                attempts.append(now)
+                return None, 0
+
+            self._failed_attempts.pop(remote_address, None)
+            return self._create_session(now), 0
+
+    def create_session(self) -> AuthenticatedSession | None:
+        with self._lock:
+            if not self._configuration.enabled or not self._configuration.is_configured:
+                return None
+            now = datetime.now(timezone.utc)
+            self._discard_expired_sessions(now)
+            return self._create_session(now)
+
+    def logout(self, token: str) -> None:
+        if not token:
+            return
+        with self._lock:
+            self._sessions.pop(token, None)
+
+    def _recent_attempts(self, remote_address: str, now: datetime) -> list[datetime]:
+        attempts = self._failed_attempts[remote_address]
+        cutoff = now - LOGIN_ATTEMPT_WINDOW
+        attempts[:] = [attempt for attempt in attempts if attempt > cutoff]
+        return attempts
+
+    def _discard_expired_sessions(self, now: datetime) -> None:
+        expired_tokens = [
+            token for token, session in self._sessions.items() if session.expires_at <= now
+        ]
+        for token in expired_tokens:
+            del self._sessions[token]
+
+    def _create_session(self, now: datetime) -> AuthenticatedSession:
+        session = AuthenticatedSession(
+            token=secrets.token_urlsafe(32),
+            username=self._configuration.username,
+            expires_at=now + AUTH_SESSION_LIFETIME,
+        )
+        self._sessions[session.token] = session
+        return session
+
+
 def token_candidates_by_symbol(tokens: list[sqlite3.Row]) -> dict[str, list[dict[str, str]]]:
     candidates: dict[str, list[dict[str, str]]] = defaultdict(list)
     seen_contracts: set[str] = set()
@@ -142,6 +315,10 @@ def parse_settings_payload(payload: dict[str, Any]) -> dict[str, str]:
     low_fdv_limit = nonnegative_decimal(parsed["low_fdv_limit_usd"], "low_fdv_limit_usd")
     price_gap_alert = nonnegative_decimal(parsed["price_gap_alert_pct"], "price_gap_alert_pct")
     scheduled_refresh_time = parse_scheduled_refresh_time(parsed["scheduled_refresh_time"])
+    authentication_enabled = enabled_setting(parsed["auth_enabled"], "auth_enabled")
+    authentication_username = normalized_auth_username(
+        parsed["auth_username"], required=authentication_enabled
+    )
 
     return {
         "wallet_addresses": "\n".join(wallets),
@@ -150,6 +327,8 @@ def parse_settings_payload(payload: dict[str, Any]) -> dict[str, str]:
         "low_fdv_limit_usd": decimal_text(low_fdv_limit),
         "price_gap_alert_pct": decimal_text(price_gap_alert),
         "scheduled_refresh_time": scheduled_refresh_time.strftime("%H:%M"),
+        "auth_enabled": "1" if authentication_enabled else "0",
+        "auth_username": authentication_username,
     }
 
 
@@ -256,13 +435,45 @@ class DashboardStore:
         with self.connect() as connection:
             rows = connection.execute("SELECT key, value FROM settings").fetchall()
         settings = dict(DEFAULT_SETTINGS)
-        settings.update({row["key"]: row["value"] for row in rows})
+        settings.update(
+            {row["key"]: row["value"] for row in rows if row["key"] in DEFAULT_SETTINGS}
+        )
         return settings
 
+    def authentication_configuration(self) -> AuthenticationConfiguration:
+        settings = self.get_settings()
+        with self.connect() as connection:
+            rows = connection.execute(
+                "SELECT key, value FROM settings WHERE key IN (?, ?)",
+                tuple(AUTH_SECRET_SETTING_KEYS),
+            ).fetchall()
+        secrets_by_key = {row["key"]: row["value"] for row in rows}
+        return AuthenticationConfiguration(
+            enabled=settings["auth_enabled"] == "1",
+            username=settings["auth_username"],
+            password_salt=secrets_by_key.get("auth_password_salt", ""),
+            password_hash=secrets_by_key.get("auth_password_hash", ""),
+        )
+
     def update_settings(self, payload: dict[str, Any]) -> dict[str, str]:
+        unexpected = set(payload) - EDITABLE_SETTINGS - {"auth_password"}
+        if unexpected:
+            raise ValueError(f"Unsupported settings: {', '.join(sorted(unexpected))}")
         current = self.get_settings()
-        current.update(payload)
+        current.update({key: value for key, value in payload.items() if key != "auth_password"})
         parsed = parse_settings_payload(current)
+        previous_authentication = self.authentication_configuration()
+        password_value = payload.get("auth_password")
+        password = "" if password_value in (None, "") else normalized_auth_password(password_value)
+
+        password_salt = ""
+        password_hash = ""
+        if parsed["auth_enabled"] == "1":
+            if password:
+                password_salt, password_hash = password_record(password)
+            elif not previous_authentication.is_configured:
+                raise ValueError("auth_password is required when enabling authentication")
+
         with self.connect() as connection:
             connection.executemany(
                 """
@@ -271,6 +482,22 @@ class DashboardStore:
                 """,
                 parsed.items(),
             )
+            if parsed["auth_enabled"] == "0":
+                connection.executemany(
+                    "DELETE FROM settings WHERE key = ?",
+                    ((key,) for key in AUTH_SECRET_SETTING_KEYS),
+                )
+            elif password:
+                connection.executemany(
+                    """
+                    INSERT INTO settings(key, value) VALUES (?, ?)
+                    ON CONFLICT(key) DO UPDATE SET value = excluded.value
+                    """,
+                    (
+                        ("auth_password_salt", password_salt),
+                        ("auth_password_hash", password_hash),
+                    ),
+                )
         return parsed
 
     def save_snapshot(
@@ -1081,6 +1308,7 @@ class DashboardHTTPServer(ThreadingHTTPServer):
         super().__init__(address, DashboardRequestHandler)
         self.store = store
         self.refresh_lock = threading.Lock()
+        self.authentication = AuthenticationManager(store.authentication_configuration())
         self.scheduler: DailyRefreshScheduler | None = None
 
 
@@ -1093,11 +1321,18 @@ class DashboardRequestHandler(SimpleHTTPRequestHandler):
     def log_message(self, format: str, *args: Any) -> None:
         return
 
-    def send_json(self, payload: Any, status: HTTPStatus = HTTPStatus.OK) -> None:
+    def send_json(
+        self,
+        payload: Any,
+        status: HTTPStatus = HTTPStatus.OK,
+        headers: dict[str, str] | None = None,
+    ) -> None:
         data = json.dumps(payload, ensure_ascii=False).encode("utf-8")
         self.send_response(status)
         self.send_header("Content-Type", "application/json; charset=utf-8")
         self.send_header("Content-Length", str(len(data)))
+        for name, value in (headers or {}).items():
+            self.send_header(name, value)
         self.end_headers()
         self.wfile.write(data)
 
@@ -1126,9 +1361,99 @@ class DashboardRequestHandler(SimpleHTTPRequestHandler):
         status = HTTPStatus.BAD_REQUEST if isinstance(error, ValueError) else HTTPStatus.INTERNAL_SERVER_ERROR
         self.send_json({"error": str(error)}, status)
 
+    def session_token(self) -> str:
+        raw_cookie = self.headers.get("Cookie", "")
+        try:
+            cookie = SimpleCookie()
+            cookie.load(raw_cookie)
+        except (ValueError, TypeError):
+            return ""
+        morsel = cookie.get(AUTH_SESSION_COOKIE)
+        return morsel.value if morsel is not None else ""
+
+    def is_secure_request(self) -> bool:
+        forwarded_protocol = self.headers.get("X-Forwarded-Proto", "")
+        return forwarded_protocol.split(",", 1)[0].strip().lower() == "https"
+
+    def session_cookie(self, session: AuthenticatedSession | None = None) -> str:
+        cookie = SimpleCookie()
+        cookie[AUTH_SESSION_COOKIE] = session.token if session is not None else ""
+        morsel = cookie[AUTH_SESSION_COOKIE]
+        morsel["path"] = "/"
+        morsel["httponly"] = True
+        morsel["samesite"] = "Strict"
+        if session is None:
+            morsel["max-age"] = 0
+        else:
+            morsel["max-age"] = int(AUTH_SESSION_LIFETIME.total_seconds())
+        if self.is_secure_request():
+            morsel["secure"] = True
+        return morsel.OutputString()
+
+    def authentication_payload(self, session: AuthenticatedSession | None = None) -> dict[str, Any]:
+        authentication_enabled = self.server.authentication.authentication_enabled
+        authenticated = not authentication_enabled or session is not None
+        return {
+            "enabled": authentication_enabled,
+            "authenticated": authenticated,
+            "username": session.username if session is not None else "",
+        }
+
+    def require_authentication(self) -> bool:
+        if not self.server.authentication.authentication_enabled:
+            return True
+        if self.server.authentication.session(self.session_token()) is not None:
+            return True
+        self.send_json(
+            {"error": "请先登录后再访问看板数据", "code": "authentication_required"},
+            HTTPStatus.UNAUTHORIZED,
+        )
+        return False
+
+    def login(self, payload: dict[str, Any]) -> None:
+        unexpected = set(payload) - {"username", "password"}
+        if unexpected:
+            raise ValueError(f"Unsupported login fields: {', '.join(sorted(unexpected))}")
+        username = str(payload.get("username", ""))
+        password = payload.get("password")
+        if not isinstance(password, str):
+            password = ""
+        session, retry_after = self.server.authentication.login(
+            self.client_address[0], username, password
+        )
+        if session is None:
+            if retry_after:
+                self.send_json(
+                    {
+                        "error": "登录失败次数过多，请稍后再试",
+                        "code": "login_rate_limited",
+                        "retry_after_seconds": retry_after,
+                    },
+                    HTTPStatus.TOO_MANY_REQUESTS,
+                )
+            else:
+                self.send_json(
+                    {"error": "用户名或密码不正确", "code": "invalid_credentials"},
+                    HTTPStatus.UNAUTHORIZED,
+                )
+            return
+        self.send_json(
+            {"authentication": self.authentication_payload(session)},
+            headers={"Set-Cookie": self.session_cookie(session)},
+        )
+
     def do_GET(self) -> None:
         parsed_url = urlparse(self.path)
         path = parsed_url.path
+        if path == "/api/auth/status":
+            session = self.server.authentication.session(self.session_token())
+            self.send_json({"authentication": self.authentication_payload(session)})
+            return
+        if path == "/api/health":
+            self.send_json({"status": "ok"})
+            return
+        if path.startswith("/api/") and not self.require_authentication():
+            return
         if path == "/api/dashboard":
             try:
                 payload = build_dashboard(self.server.store)
@@ -1147,9 +1472,6 @@ class DashboardRequestHandler(SimpleHTTPRequestHandler):
             except Exception as error:  # noqa: BLE001
                 self.handle_api_error(error)
             return
-        if path == "/api/health":
-            self.send_json({"status": "ok"})
-            return
         if path == "/":
             self.path = "/index.html"
         super().do_GET()
@@ -1157,6 +1479,18 @@ class DashboardRequestHandler(SimpleHTTPRequestHandler):
     def do_POST(self) -> None:
         path = urlparse(self.path).path
         try:
+            if path == "/api/auth/login":
+                self.login(self.read_json())
+                return
+            if path == "/api/auth/logout":
+                self.server.authentication.logout(self.session_token())
+                self.send_json(
+                    {"authentication": self.authentication_payload()},
+                    headers={"Set-Cookie": self.session_cookie()},
+                )
+                return
+            if not self.require_authentication():
+                return
             payload = self.read_json()
             if path == "/api/refresh":
                 if not self.server.refresh_lock.acquire(blocking=False):
@@ -1169,7 +1503,29 @@ class DashboardRequestHandler(SimpleHTTPRequestHandler):
                 self.send_json(result, HTTPStatus.CREATED)
                 return
             if path == "/api/settings":
-                self.send_json({"settings": self.server.store.update_settings(payload)})
+                settings = self.server.store.update_settings(payload)
+                configuration_changed = self.server.authentication.replace_configuration(
+                    self.server.store.authentication_configuration()
+                )
+                session = None
+                headers: dict[str, str] | None = None
+                if configuration_changed:
+                    if self.server.authentication.authentication_enabled:
+                        session = self.server.authentication.create_session()
+                        if session is None:
+                            raise RuntimeError("Authentication is enabled without valid credentials")
+                        headers = {"Set-Cookie": self.session_cookie(session)}
+                    else:
+                        headers = {"Set-Cookie": self.session_cookie()}
+                else:
+                    session = self.server.authentication.session(self.session_token())
+                self.send_json(
+                    {
+                        "settings": settings,
+                        "authentication": self.authentication_payload(session),
+                    },
+                    headers=headers,
+                )
                 return
             if path == "/api/preferences":
                 self.server.store.update_preference(payload)
@@ -1194,6 +1550,8 @@ class DashboardRequestHandler(SimpleHTTPRequestHandler):
         if not path.startswith(prefix):
             self.send_json({"error": "Unknown API endpoint"}, HTTPStatus.NOT_FOUND)
             return
+        if not self.require_authentication():
+            return
         try:
             holding_id = int(path.removeprefix(prefix))
             result = self.server.store.save_manual_holding(self.read_json(), holding_id)
@@ -1206,6 +1564,8 @@ class DashboardRequestHandler(SimpleHTTPRequestHandler):
         prefix = "/api/manual-holdings/"
         if not path.startswith(prefix):
             self.send_json({"error": "Unknown API endpoint"}, HTTPStatus.NOT_FOUND)
+            return
+        if not self.require_authentication():
             return
         try:
             holding_id = int(path.removeprefix(prefix))
