@@ -1,0 +1,44 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="color-scheme" content="light">
+    <title>BSC 持仓看板</title>
+    <link rel="stylesheet" href="/styles.css">
+  </head>
+  <body>
+    <div class="ambient ambient-one"></div>
+    <div class="ambient ambient-two"></div>
+    <header class="topbar">
+      <a class="brand" href="#overview" data-view="overview">
+        <span class="brand-mark">B</span>
+        <span>
+          <strong>BSC 持仓看板</strong>
+          <small>本地数据 · Binance Alpha × Binance Futures</small>
+        </span>
+      </a>
+      <div class="topbar-actions">
+        <span id="snapshot-status" class="snapshot-status">尚未获取快照</span>
+        <button id="refresh-button" class="button button-primary">刷新市场与链上余额</button>
+      </div>
+    </header>
+
+    <main class="shell">
+      <nav class="navigation" aria-label="主导航">
+        <button data-view="overview" class="nav-item active">总览</button>
+        <button data-view="opportunities" class="nav-item">低 FDV 未记录</button>
+        <button data-view="replenishments" class="nav-item">补仓清单</button>
+        <button data-view="holdings" class="nav-item">持仓盘点</button>
+        <button data-view="holder-comparison" class="nav-item">持币地址变化</button>
+        <button data-view="maintenance" class="nav-item">本地维护</button>
+        <button data-view="settings" class="nav-item">设置</button>
+      </nav>
+      <section id="notice" class="notice" hidden></section>
+      <section id="content" class="content" aria-live="polite"></section>
+    </main>
+
+    <dialog id="modal" class="modal"></dialog>
+    <script src="/app.js" defer></script>
+  </body>
+</html>

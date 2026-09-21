@@ -1,0 +1,15 @@
+.DS_Store
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.coverage
+
+# Local dashboard state and runtime files.
+.run/
+data/
+
+# Generated reports and historical working artifacts.
+outputs/
+work/*
+!work/export_bsc_futures_excel.py
