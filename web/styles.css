@@ -569,7 +569,7 @@ tbody tr:last-child td {
   font-weight: 700;
 }
 
-.field input,
+.field input:not([type="checkbox"]),
 .field textarea,
 .field select {
   width: 100%;
@@ -591,6 +591,14 @@ tbody tr:last-child td {
   gap: 8px;
   color: var(--ink);
   cursor: pointer;
+}
+
+.checkbox-label input[type="checkbox"] {
+  flex: 0 0 auto;
+  width: 1.05rem;
+  height: 1.05rem;
+  margin: 0;
+  accent-color: var(--green);
 }
 
 .form-actions {
