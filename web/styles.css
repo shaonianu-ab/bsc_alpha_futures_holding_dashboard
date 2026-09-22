@@ -567,6 +567,43 @@ tbody tr:last-child td {
   font-family: "SFMono-Regular", Consolas, monospace;
 }
 
+.contract-copy {
+  display: inline-flex;
+  align-items: center;
+  max-width: 100%;
+  overflow: hidden;
+  border: 0;
+  padding: 0;
+  color: var(--muted);
+  background: transparent;
+  cursor: copy;
+  text-align: left;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.contract-copy:hover,
+.contract-copy:focus-visible,
+.contract-copy.copied {
+  color: var(--green-deep);
+  text-decoration: underline;
+}
+
+.contract-copy::after {
+  flex: 0 0 auto;
+  margin-left: 5px;
+  color: var(--green);
+  font-family: "Avenir Next", "Noto Sans SC", "PingFang SC", "Microsoft YaHei", sans-serif;
+  font-size: 0.64rem;
+  font-weight: 700;
+  content: "复制";
+}
+
+.contract-copy-inline {
+  display: inline-flex;
+  vertical-align: middle;
+}
+
 .badge {
   display: inline-flex;
   align-items: center;
@@ -673,6 +710,16 @@ tbody tr:last-child td {
   padding: 9px 10px;
   color: var(--ink);
   background: #fffdf8;
+}
+
+.contract-input-row {
+  display: flex;
+  gap: 8px;
+}
+
+.contract-input-row input {
+  min-width: 0;
+  flex: 1;
 }
 
 .field textarea {
