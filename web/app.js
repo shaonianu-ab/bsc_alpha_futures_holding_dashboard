@@ -64,10 +64,15 @@ function shortContract(value) {
   return contract ? `$${contract.slice(0, 8)}...${contract.slice(-5)}` : "-";
 }
 
-function contractCopyButton(value, extraClass = "") {
+function contractQueryLink(contract, extraClass = "") {
+  const url = `https://bscscan.com/token/${encodeURIComponent(contract)}`;
+  return `<a class="contract-query ${extraClass}" href="${escapeHtml(url)}" target="_blank" rel="noopener noreferrer">查询</a>`;
+}
+
+function contractActions(value, extraClass = "") {
   const contract = String(value || "");
   if (!contract) return "-";
-  return `<button class="contract contract-copy ${extraClass}" type="button" data-action="copy-contract" data-contract-address="${escapeHtml(contract)}" title="点击复制完整合约地址" aria-label="复制合约地址 ${escapeHtml(contract)}">${escapeHtml(shortContract(contract))}</button>`;
+  return `<span class="contract-actions ${extraClass}"><button class="contract contract-copy" type="button" data-action="copy-contract" data-contract-address="${escapeHtml(contract)}" title="点击复制完整合约地址" aria-label="复制合约地址 ${escapeHtml(contract)}">${escapeHtml(shortContract(contract))}</button>${contractQueryLink(contract)}</span>`;
 }
 
 async function copyContractAddress(contract) {
@@ -207,7 +212,7 @@ function tokenCell(token) {
   return `
     <span class="token-symbol">${escapeHtml(token.symbol)}</span>
     <span class="token-name">${escapeHtml(token.name || token.futures_symbol)}</span>
-    ${contractCopyButton(token.contract_address)}
+    ${contractActions(token.contract_address)}
   `;
 }
 
@@ -399,7 +404,7 @@ function renderHolderComparison() {
         <div class="table-toolbar"><div><p class="eyebrow">比较结果</p><h2>${comparison.from_snapshot.snapshot_date} 至 ${comparison.to_snapshot.snapshot_date}</h2><p class="hint">${comparison.comparable_count} 个可比较代币；${comparison.unavailable_count} 个代币缺少至少一天的持币地址数量；${comparison.missing_token_count} 个代币仅出现在其中一天。</p></div><span class="badge badge-neutral">绝对变化排序</span></div>
         <div class="table-wrap"><table><thead><tr><th>代币</th><th class="numeric">起始持币地址</th><th class="numeric">结束持币地址</th><th class="numeric">变化</th><th class="numeric">变化比例</th><th class="numeric">结束日 FDV</th><th class="numeric">结束日价格</th></tr></thead>
         <tbody>${rows.map((row) => `
-          <tr><td class="token-cell"><span class="token-symbol">${escapeHtml(row.symbol)}</span><span class="token-name">${escapeHtml(row.name)}</span>${contractCopyButton(row.contract_address)}</td><td class="numeric">${holderCount(row.from_holder_count)}</td><td class="numeric">${holderCount(row.to_holder_count)}</td><td class="numeric">${holderChangeLabel(row.holder_change)}</td><td class="numeric">${row.holder_change_pct === null ? "-" : `${numberFormatter.format(row.holder_change_pct)}%`}</td><td class="numeric">${moneyCompact(row.fdv_usd)}</td><td class="numeric">${price(row.token_price)}</td></tr>
+          <tr><td class="token-cell"><span class="token-symbol">${escapeHtml(row.symbol)}</span><span class="token-name">${escapeHtml(row.name)}</span>${contractActions(row.contract_address)}</td><td class="numeric">${holderCount(row.from_holder_count)}</td><td class="numeric">${holderCount(row.to_holder_count)}</td><td class="numeric">${holderChangeLabel(row.holder_change)}</td><td class="numeric">${row.holder_change_pct === null ? "-" : `${numberFormatter.format(row.holder_change_pct)}%`}</td><td class="numeric">${moneyCompact(row.fdv_usd)}</td><td class="numeric">${price(row.token_price)}</td></tr>
         `).join("")}</tbody></table></div>
         ${rows.length ? "" : '<div class="empty-state"><h2>没有可比较的持币地址数据</h2><p class="subtle">两个日期的同一代币均需要存在 holders 数量。</p></div>'}
       </section>
@@ -432,12 +437,12 @@ function renderMaintenance() {
       <tbody>${holdings.map((holding) => {
         const suggestions = candidates[String(holding.id)] || [];
         const matchResult = holding.mapping_status === "confirmed"
-          ? `<span class="badge badge-green">已确认</span>${contractCopyButton(holding.contract_address)}`
+          ? `<span class="badge badge-green">已确认</span>${contractActions(holding.contract_address)}`
           : '<span class="badge badge-amber">待确认</span><span class="hint">未计入持仓与补仓计算</span>';
         const candidate = holding.mapping_status === "confirmed"
           ? '<span class="hint">无需操作</span>'
           : suggestions.length
-            ? `<div class="candidate-actions"><span class="hint">${suggestions.length === 1 ? "已找到唯一候选，请确认：" : `找到 ${suggestions.length} 个候选，请选择：`}</span>${suggestions.map((suggestion) => `<button class="button button-small" data-action="confirm-suggestion" data-id="${holding.id}" data-contract="${suggestion.contract_address}">确认 ${escapeHtml(suggestion.name)}</button>${contractCopyButton(suggestion.contract_address, "contract-copy-inline")}`).join("")}</div>`
+            ? `<div class="candidate-actions"><span class="hint">${suggestions.length === 1 ? "已找到唯一候选，请确认：" : `找到 ${suggestions.length} 个候选，请选择：`}</span>${suggestions.map((suggestion) => `<button class="button button-small" data-action="confirm-suggestion" data-id="${holding.id}" data-contract="${suggestion.contract_address}">确认 ${escapeHtml(suggestion.name)}</button>${contractActions(suggestion.contract_address, "contract-actions-inline")}`).join("")}</div>`
             : `<div class="candidate-actions"><span class="hint">未找到当前 BSC 合约</span><button class="button button-small" data-action="edit-manual" data-id="${holding.id}">人工关联</button></div>`;
         return `
           <tr><td><strong>${escapeHtml(holding.source_name)}</strong><span class="token-name">${escapeHtml(holding.asset_symbol)}</span></td><td class="numeric">${amount(holding.amount)}</td><td>${matchResult}</td><td>${candidate}</td><td>${new Date(holding.updated_at).toLocaleString("zh-CN")}</td><td>${escapeHtml(holding.note || "-")}</td><td class="row-actions"><button class="button button-small" data-action="edit-manual" data-id="${holding.id}">编辑</button><button class="button button-small button-danger" data-action="delete-manual" data-id="${holding.id}">删除</button></td></tr>
@@ -503,7 +508,7 @@ function openTokenModal(contract) {
   if (!token) return;
   modal.innerHTML = `
     <section class="modal-content">
-      <div class="modal-heading"><div><p class="eyebrow">单币规则</p><h2>${escapeHtml(token.symbol)} · ${escapeHtml(token.name)}</h2><p class="hint">${contractCopyButton(token.contract_address, "contract-copy-inline")} · 当前合计 ${money(token.total_value_usd)}</p></div><button class="icon-button" data-action="close-modal" aria-label="关闭">×</button></div>
+      <div class="modal-heading"><div><p class="eyebrow">单币规则</p><h2>${escapeHtml(token.symbol)} · ${escapeHtml(token.name)}</h2><p class="hint">${contractActions(token.contract_address, "contract-actions-inline")} · 当前合计 ${money(token.total_value_usd)}</p></div><button class="icon-button" data-action="close-modal" aria-label="关闭">×</button></div>
       <form data-form="preference" class="form-grid">
         <input type="hidden" name="contract_address" value="${token.contract_address}">
         <div class="field"><label>初始买入金额（USD）</label><input name="initial_purchase_usd" type="number" min="0" step="any" value="${token.initial_purchase_usd}"></div>
@@ -537,7 +542,7 @@ function openManualModal(id) {
         <div class="field"><label>来源</label><input name="source_name" value="${escapeHtml(holding.source_name)}" required></div>
         <div class="field"><label>交易所 Symbol</label><input name="asset_symbol" value="${escapeHtml(holding.asset_symbol)}" required></div>
         <div class="field"><label>数量</label><input name="amount" type="number" min="0" step="any" value="${escapeHtml(holding.amount)}" required></div>
-        <div class="field full"><label>BSC 合约地址（可选）</label><div class="contract-input-row"><input name="contract_address" value="${escapeHtml(holding.contract_address)}" placeholder="0x...">${holding.contract_address ? `<button class="button" type="button" data-action="copy-contract" data-contract-address="${escapeHtml(holding.contract_address)}">复制</button>` : ""}</div><p class="hint">填写合约地址会人工确认；留空时系统会按 Symbol 自动确认唯一候选。</p></div>
+        <div class="field full"><label>BSC 合约地址（可选）</label><div class="contract-input-row"><input name="contract_address" value="${escapeHtml(holding.contract_address)}" placeholder="0x...">${holding.contract_address ? `<button class="button" type="button" data-action="copy-contract" data-contract-address="${escapeHtml(holding.contract_address)}">复制</button>${contractQueryLink(holding.contract_address, "button")}` : ""}</div><p class="hint">填写合约地址会人工确认；留空时系统会按 Symbol 自动确认唯一候选。</p></div>
         <div class="field full"><label>备注</label><textarea name="note">${escapeHtml(holding.note)}</textarea></div>
         <div class="field full form-actions"><button class="button button-primary">保存修改</button></div>
       </form>

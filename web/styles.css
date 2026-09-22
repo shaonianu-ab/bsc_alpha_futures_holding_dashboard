@@ -567,9 +567,17 @@ tbody tr:last-child td {
   font-family: "SFMono-Regular", Consolas, monospace;
 }
 
+.contract-actions {
+  display: inline-flex;
+  align-items: center;
+  max-width: 100%;
+  gap: 5px;
+}
+
 .contract-copy {
   display: inline-flex;
   align-items: center;
+  min-width: 0;
   max-width: 100%;
   overflow: hidden;
   border: 0;
@@ -599,9 +607,38 @@ tbody tr:last-child td {
   content: "复制";
 }
 
-.contract-copy-inline {
+.contract-actions-inline {
   display: inline-flex;
   vertical-align: middle;
+}
+
+.contract-query {
+  flex: 0 0 auto;
+  border: 1px solid rgba(30, 118, 89, 0.36);
+  border-radius: 999px;
+  padding: 2px 5px;
+  color: var(--green-deep);
+  background: rgba(220, 234, 193, 0.45);
+  font-family: "Avenir Next", "Noto Sans SC", "PingFang SC", "Microsoft YaHei", sans-serif;
+  font-size: 0.64rem;
+  font-weight: 700;
+  line-height: 1.2;
+  text-decoration: none;
+}
+
+.contract-query:hover,
+.contract-query:focus-visible {
+  border-color: var(--green-deep);
+  background: var(--lime);
+}
+
+.contract-input-row .contract-query {
+  display: inline-flex;
+  align-items: center;
+  border-radius: 10px;
+  padding: 9px 13px;
+  font-size: inherit;
+  line-height: normal;
 }
 
 .badge {
@@ -650,13 +687,25 @@ tbody tr:last-child td {
 }
 
 .notice {
-  margin-top: 12px;
+  position: fixed;
+  right: 22px;
+  bottom: 22px;
+  z-index: 30;
+  width: min(390px, calc(100vw - 44px));
+  margin: 0;
   border: 1px solid #e9c778;
-  border-radius: 10px;
-  padding: 11px 13px;
+  border-radius: 12px;
+  padding: 12px 14px;
   color: #704116;
   background: #fff4dd;
+  box-shadow: 0 14px 34px rgba(35, 61, 51, 0.2);
   font-size: 0.84rem;
+  line-height: 1.45;
+  animation: toast-in 180ms ease-out;
+}
+
+.notice[hidden] {
+  display: none;
 }
 
 .notice.error {
@@ -815,6 +864,17 @@ tbody tr:last-child td {
   }
 }
 
+@keyframes toast-in {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
 @media (max-width: 900px) {
   .metrics {
     grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -870,5 +930,11 @@ tbody tr:last-child td {
     grid-template-columns: 82px minmax(50px, 1fr) 58px;
     gap: 8px;
     font-size: 0.72rem;
+  }
+
+  .notice {
+    right: 14px;
+    bottom: 14px;
+    width: calc(100vw - 28px);
   }
 }
