@@ -49,10 +49,12 @@ class DashboardStoreTest(unittest.TestCase):
         self.store = DashboardStore(Path(self.temporary_directory.name) / "dashboard.sqlite3")
         self.alpha = match("ALPHA", 1, "10000000", "2", "5")
         self.empty = match("EMPTY", 2, "50000000", "1")
+        self.high_fdv = match("HIGH", 5, "300000000", "1")
         self.pending = match("PENDING", 3, "25000000", "1")
         self.pending_duplicate = match("PENDING", 4, "25000000", "1")
         self.store.save_snapshot(
-            [self.alpha, self.empty, self.pending, self.pending_duplicate], wallet_count=1
+            [self.alpha, self.empty, self.high_fdv, self.pending, self.pending_duplicate],
+            wallet_count=1,
         )
 
     def tearDown(self) -> None:
@@ -85,9 +87,15 @@ class DashboardStoreTest(unittest.TestCase):
         self.assertEqual(tokens["ALPHA"]["shortfall_usd"], 10.0)
         self.assertTrue(tokens["ALPHA"]["is_replenishment"])
         self.assertTrue(tokens["EMPTY"]["is_opportunity"])
+        self.assertFalse(tokens["HIGH"]["is_opportunity"])
         self.assertEqual(tokens["PENDING"]["holding_state"], "pending_confirmation")
         self.assertFalse(tokens["PENDING"]["is_opportunity"])
         self.assertFalse(tokens["PENDING"]["is_replenishment"])
+        self.assertEqual(
+            [token["symbol"] for token in dashboard["unheld_tokens"]],
+            ["EMPTY", "HIGH"],
+        )
+        self.assertEqual(dashboard["metrics"]["unheld_token_count"], 2)
         self.assertEqual(
             dashboard["manual_holding_candidates"]["2"],
             [

@@ -1084,11 +1084,13 @@ def build_dashboard(store: DashboardStore) -> dict[str, Any]:
             "manual_holdings": manual_payload,
             "manual_holding_candidates": {},
             "tokens": [],
+            "unheld_tokens": [],
             "opportunities": [],
             "replenishments": [],
             "holdings": [],
             "metrics": {
                 "token_count": 0,
+                "unheld_token_count": 0,
                 "recorded_unheld_low_fdv_count": 0,
                 "pending_confirmation_count": 0,
                 "replenishment_count": 0,
@@ -1206,6 +1208,10 @@ def build_dashboard(store: DashboardStore) -> dict[str, Any]:
             }
         )
 
+    unheld_tokens = sorted(
+        (token for token in tokens if token["holding_state"] == "not_recorded"),
+        key=lambda token: (token["fdv_usd"], token["symbol"]),
+    )
     opportunities = sorted(
         (token for token in tokens if token["is_opportunity"]),
         key=lambda token: (token["fdv_usd"], token["symbol"]),
@@ -1277,6 +1283,7 @@ def build_dashboard(store: DashboardStore) -> dict[str, Any]:
         "scheduled_refresh": scheduled_refresh,
         "wallet_addresses": wallet_addresses,
         "tokens": tokens,
+        "unheld_tokens": unheld_tokens,
         "opportunities": opportunities,
         "replenishments": replenishments,
         "holdings": holdings,
@@ -1284,6 +1291,7 @@ def build_dashboard(store: DashboardStore) -> dict[str, Any]:
         "manual_holding_candidates": candidate_payload,
         "metrics": {
             "token_count": len(tokens),
+            "unheld_token_count": len(unheld_tokens),
             "recorded_unheld_low_fdv_count": len(opportunities),
             "pending_confirmation_count": sum(
                 1 for token in tokens if token["holding_state"] == "pending_confirmation"

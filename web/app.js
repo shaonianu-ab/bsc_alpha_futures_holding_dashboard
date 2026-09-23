@@ -269,7 +269,7 @@ function renderOverview() {
       <button class="button" data-view="settings">调整全局规则</button>
     </header>
     <section class="metrics">
-      <article class="metric-card"><span class="metric-label">低 FDV 无已记录持仓</span><div class="metric-value">${integerFormatter.format(metrics.recorded_unheld_low_fdv_count)}</div><span class="metric-detail">可从机会池开始检查</span></article>
+      <article class="metric-card"><span class="metric-label">未持仓代币</span><div class="metric-value">${integerFormatter.format(metrics.unheld_token_count)}</div><span class="metric-detail">其中低 FDV ${integerFormatter.format(metrics.recorded_unheld_low_fdv_count)} 个</span></article>
       <article class="metric-card warning"><span class="metric-label">补仓候选</span><div class="metric-value">${integerFormatter.format(metrics.replenishment_count)}</div><span class="metric-detail">待补 ${money(metrics.replenishment_shortfall_usd)}</span></article>
       <article class="metric-card attention"><span class="metric-label">交易所待确认</span><div class="metric-value">${integerFormatter.format(metrics.pending_confirmation_count)}</div><span class="metric-detail">不计入未持仓或补仓结论</span></article>
       <article class="metric-card"><span class="metric-label">已确认总持仓价值</span><div class="metric-value">${moneyCompact(metrics.total_holding_value_usd)}</div><span class="metric-detail">${integerFormatter.format(metrics.held_token_count)} 个已确认代币</span></article>
@@ -316,6 +316,31 @@ function renderOpportunities() {
         <tr data-search="${escapeHtml(`${token.symbol} ${token.name}`.toLowerCase())}"><td class="token-cell">${tokenCell(token)}</td><td class="numeric">${moneyCompact(token.fdv_usd)}</td><td class="numeric">${holderCount(token.holder_count)}</td><td class="numeric">${price(token.token_price)}</td><td>${riskCell(token)}</td><td>${stateBadge(token)}</td><td class="row-actions"><button class="button button-small" data-action="add-manual" data-contract="${token.contract_address}">登记交易所</button><button class="button button-small" data-action="edit-token" data-contract="${token.contract_address}">规则</button></td></tr>
       `).join("")}</tbody></table></div>
       ${tokens.length ? "" : '<div class="empty-state"><h2>当前没有符合条件的代币</h2><p class="subtle">可以调整低 FDV 阈值，或确认本地交易所持仓。</p></div>'}
+    </section>
+  `;
+}
+
+function unheldScope(token) {
+  const badges = [
+    token.is_low_fdv
+      ? '<span class="badge badge-amber">低 FDV</span>'
+      : '<span class="badge badge-neutral">高于阈值</span>',
+  ];
+  if (token.ignored) badges.push('<span class="badge badge-neutral">规则已排除</span>');
+  return `<div class="status-line">${badges.join("")}</div>`;
+}
+
+function renderUnheld() {
+  const tokens = state.dashboard.unheld_tokens;
+  content.innerHTML = `
+    <header class="view-heading"><div><p class="eyebrow">完整盘点</p><h1>未持仓代币</h1><p class="subtle">链上余额与已确认本地交易所数量均为零的代币，不受低 FDV 阈值和单币排除设置限制。</p></div><span class="badge badge-neutral">${tokens.length} 个代币</span></header>
+    <section class="panel table-panel">
+      ${filterToolbar("unheld", "未持仓代币清单", "存在待确认交易所记录的代币不会列入；未录入的交易所余额仍需人工登记。")}
+      <div class="table-wrap"><table data-table="unheld"><thead><tr><th>代币</th><th class="numeric">FDV</th><th class="numeric">持有人数</th><th class="numeric">Alpha 价格</th><th>匹配与价格</th><th>清单范围</th><th></th></tr></thead>
+      <tbody>${tokens.map((token) => `
+        <tr data-search="${escapeHtml(`${token.symbol} ${token.name}`.toLowerCase())}"><td class="token-cell">${tokenCell(token)}</td><td class="numeric">${moneyCompact(token.fdv_usd)}</td><td class="numeric">${holderCount(token.holder_count)}</td><td class="numeric">${price(token.token_price)}</td><td>${riskCell(token)}</td><td>${unheldScope(token)}</td><td class="row-actions"><button class="button button-small" data-action="add-manual" data-contract="${token.contract_address}">登记交易所</button><button class="button button-small" data-action="edit-token" data-contract="${token.contract_address}">规则</button></td></tr>
+      `).join("")}</tbody></table></div>
+      ${tokens.length ? "" : '<div class="empty-state"><h2>当前没有未持仓代币</h2><p class="subtle">所有代币均已有持仓，或仍有交易所记录等待确认。</p></div>'}
     </section>
   `;
 }
@@ -473,6 +498,7 @@ function renderSettings() {
       </article>
       <article class="panel"><p class="eyebrow">口径说明</p><h2>规则如何影响清单</h2>
         <dl class="definition-list">
+          <dt>未持仓代币</dt><dd>链上与已确认本地数量均为零；待确认记录不计入</dd>
           <dt>低 FDV 未记录</dt><dd>FDV 不高于阈值，且没有链上或已确认本地余额</dd>
           <dt>补仓候选</dt><dd>已持有、低于目标值、低 FDV、未排除</dd>
           <dt>初始买入金额</dt><dd>用于对照，不作为已实现成本或盈亏</dd>
@@ -560,6 +586,7 @@ function render() {
   }
   if (state.view === "overview") return renderOverview();
   if (state.view === "opportunities") return renderOpportunities();
+  if (state.view === "unheld") return renderUnheld();
   if (state.view === "replenishments") return renderReplenishments();
   if (state.view === "holdings") return renderHoldings();
   if (state.view === "holder-comparison") return renderHolderComparison();

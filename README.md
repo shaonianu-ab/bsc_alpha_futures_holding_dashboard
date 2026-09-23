@@ -79,6 +79,7 @@ CSV imports update a record when source, exchange Symbol, resolved contract addr
 
 ## Decision Rules
 
+- **未持仓代币**: The BSC balance and confirmed locally maintained exchange balance are both zero, and no exchange record is awaiting confirmation. This inventory is not limited by the FDV threshold or per-token exclusion setting.
 - **低 FDV 未记录**: FDV is at or below the configured threshold and the token has neither a BSC balance nor a confirmed locally maintained exchange balance.
 - **交易所待确认**: A local exchange record exists but its association with a BSC contract has not been confirmed. It is excluded from discovery and replenishment conclusions.
 - **补仓清单**: The token is held, is below its configured target value, is at or below the low-FDV threshold, is not excluded, and has no pending exchange record for the same Symbol.
